@@ -2,15 +2,16 @@
 
 import Hls from "hls.js";
 import { useEffect, useRef, useState } from "react";
+import { resolveZeeStream } from "./stream-auth";
 
-const initialStreams = [
+const initialStreams: { name: string; url: string; auth?: "zee" }[] = [
   { name: "Sandesh News", url: "https://mumt01.tangotv.in/O5aw8Zn3SANDESHNEWS/index.m3u8" },
   { name: "VTV Gujarati", url: "https://stream.ottlive.co.in/vtvgujarati/index.m3u8" },
-  { name: "Screen 3", url: "https://mumt01.tangotv.in/O5aw8Zn3SANDESHNEWS/index.m3u8" },
-  { name: "Screen 4", url: "https://mumt01.tangotv.in/O5aw8Zn3SANDESHNEWS/index.m3u8" },
+  { name: "Zee 24 Kalak", url: "https://d2i4me5ac6ausm.cloudfront.net/index.m3u8", auth: "zee" },
+  { name: "TV9 Gujarati", url: "https://dyjmyiv3bp2ez.cloudfront.net/pub-iotv9guj3ki8lu/liveabr/playlist.m3u8" },
 ];
 
-function StreamCard({ name, initialUrl, number }: { name: string; initialUrl: string; number: number }) {
+function StreamCard({ name, initialUrl, number, auth }: { name: string; initialUrl: string; number: number; auth?: "zee" }) {
   const [error, setError] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -20,6 +21,7 @@ function StreamCard({ name, initialUrl, number }: { name: string; initialUrl: st
 
     let active = true;
     let hls: Hls | undefined;
+    const controller = new AbortController();
     video.muted = true;
     const play = () => {
       video.play().catch(() => {
@@ -27,39 +29,53 @@ function StreamCard({ name, initialUrl, number }: { name: string; initialUrl: st
       });
     };
     const onVideoError = () => {
-      if (active) setError("Unable to play this stream. Check the URL and stream availability.");
+      if (active) setError(`Video error ${video.error?.code ?? "unknown"}: ${video.error?.message || "Stream unavailable or unsupported."}`);
     };
     video.addEventListener("error", onVideoError);
 
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = initialUrl;
-      play();
-    } else if (Hls.isSupported()) {
-      hls = new Hls();
-      hls.loadSource(initialUrl);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, play);
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (active && data.fatal) {
-          setError("Unable to load this stream. Check the URL, connection, and CORS permissions.");
-          hls?.destroy();
+    async function initialize(player: HTMLVideoElement) {
+      try {
+        const source = auth === "zee"
+          ? await resolveZeeStream(initialUrl, controller.signal)
+          : initialUrl;
+        if (!active) return;
+
+        if (player.canPlayType("application/vnd.apple.mpegurl")) {
+          player.src = source;
+          play();
+        } else if (Hls.isSupported()) {
+          hls = new Hls();
+          hls.on(Hls.Events.MANIFEST_PARSED, play);
+          hls.on(Hls.Events.ERROR, (_event, data) => {
+            if (active && data.fatal) {
+              const status = data.response?.code;
+              setError(`HLS ${data.type}: ${data.details}${status ? ` (HTTP ${status})` : ""}.`);
+              hls?.destroy();
+            }
+          });
+          hls.loadSource(source);
+          hls.attachMedia(player);
+        } else {
+          setError("This browser does not support HLS playback. Try a current version of Chrome, Edge, or Safari.");
         }
-      });
-    } else {
-      queueMicrotask(() => {
-        if (active) setError("This browser does not support HLS playback. Try a current version of Chrome, Edge, or Safari.");
-      });
+      } catch (cause) {
+        if (active) {
+          setError(cause instanceof Error ? cause.message : "Stream initialization failed.");
+        }
+      }
     }
+    void initialize(video);
 
     return () => {
       active = false;
+      controller.abort();
       video.removeEventListener("error", onVideoError);
       hls?.destroy();
       video.pause();
       video.removeAttribute("src");
       video.load();
     };
-  }, [initialUrl]);
+  }, [initialUrl, auth]);
 
   return (
     <section className="stream-card" aria-label={`${name}, screen ${number}`}>
@@ -138,7 +154,7 @@ export default function Home() {
         </div>
         {wallError && <p className="error wall-error" role="alert">{wallError}</p>}
         <div className="grid">
-          {initialStreams.map((stream, index) => <StreamCard key={index} name={stream.name} initialUrl={stream.url} number={index + 1} />)}
+          {initialStreams.map((stream, index) => <StreamCard key={index} name={stream.name} initialUrl={stream.url} number={index + 1} auth={stream.auth} />)}
         </div>
         <footer><span><span className="footer-dot" /> LIVE STREAM MONITOR</span><span>Streams start muted · Use player controls for audio</span></footer>
       </div>
